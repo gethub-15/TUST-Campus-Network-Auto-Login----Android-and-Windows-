@@ -3,8 +3,14 @@ package com.codex.campuslogin;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PixelFormat;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -15,10 +21,12 @@ import android.text.InputType;
 import android.text.TextUtils;
 import android.text.method.PasswordTransformationMethod;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.ArrayAdapter;
+import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
@@ -41,18 +49,26 @@ import java.net.CookieManager;
 import java.net.CookiePolicy;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private static final String PORTAL_HOST = "http://10.10.102.50";
     private static final String PORTAL_LOGIN = "http://10.10.102.50:801/eportal/portal/login";
     private static final String PORTAL_LOGOUT = "http://10.10.102.50:801/eportal/portal/logout";
     private static final String PORTAL_ONLINE_LIST = "http://10.10.102.50:801/eportal/portal/online_list";
-    private static final String USS_LOGIN = "http://uss.tust.edu.cn/login/?302=LI";
-    private static final String USS_HOST = "http://uss.tust.edu.cn";
+    private static final String[] USS_HOSTS = {"http://59.67.5.95", "http://uss.tust.edu.cn"};
+    private static final String USS_HOST = USS_HOSTS[0];
+    private static final String USS_LOGIN = USS_HOST + "/login/?302=LI";
     private static final String AC_IP = "10.10.102.49";
     private static final String AC_NAME = "";
     private static final String PREFS = "campus_login";
@@ -70,7 +86,7 @@ public class MainActivity extends Activity {
     };
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private EditText accountInput;
+    private AutoCompleteTextView accountInput;
     private EditText passwordInput;
     private Spinner operatorSpinner;
     private TextView statusView;
@@ -78,10 +94,17 @@ public class MainActivity extends Activity {
     private Button loginButton;
     private Button logoutButton;
     private Button refreshButton;
+    private ImageButton accountDropdownButton;
     private ImageButton passwordToggleButton;
     private SharedPreferences prefs;
     private boolean passwordVisible = false;
+    private boolean accountDropdownOpen = false;
+    private boolean accountDropdownButtonTouchActive = false;
+    private boolean accountDropdownOpenBeforeButtonDown = false;
+    private boolean suppressAccountDropdownDismiss = false;
     private String lastUssMessage = "";
+    private final LinkedHashMap<String, AccountRecord> savedAccounts = new LinkedHashMap<>();
+    private ArrayAdapter<String> accountAdapter;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -147,7 +170,7 @@ public class MainActivity extends Activity {
         panelParams.bottomMargin = dp(16);
         root.addView(panel, panelParams);
 
-        accountInput = addInput(panel, "\u5b66\u53f7", InputType.TYPE_CLASS_TEXT);
+        accountInput = addAccountInput(panel);
         passwordInput = addPasswordInput(panel);
         operatorSpinner = addOperatorSpinner(panel);
 
@@ -170,22 +193,44 @@ public class MainActivity extends Activity {
         setContentView(scrollView);
     }
 
-    private EditText addInput(LinearLayout root, String hint, int inputType) {
-        EditText input = new EditText(this);
-        input.setHint(hint);
+    private AutoCompleteTextView addAccountInput(LinearLayout root) {
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.HORIZONTAL);
+        container.setGravity(Gravity.CENTER_VERTICAL);
+        container.setPadding(dp(14), 0, dp(8), 0);
+        container.setMinimumHeight(dp(isTvLike() ? 64 : 54));
+        container.setBackground(roundRect(0xFFF8FAFC, 0xFFCBD5E1, dp(12), dp(1)));
+
+        AutoCompleteTextView input = new AutoCompleteTextView(this);
+        input.setHint("\u5b66\u53f7");
         input.setSingleLine(true);
         input.setTextSize(isTvLike() ? 20 : 16);
         input.setTextColor(0xFF0F172A);
         input.setHintTextColor(0xFF94A3B8);
-        input.setInputType(inputType);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
         input.setImeOptions(EditorInfo.IME_ACTION_NEXT);
         input.setSelectAllOnFocus(false);
         input.setFocusable(true);
         input.setFocusableInTouchMode(true);
-        input.setPadding(dp(14), 0, dp(14), 0);
-        input.setMinHeight(dp(isTvLike() ? 64 : 54));
-        input.setBackground(roundRect(0xFFF8FAFC, 0xFFCBD5E1, dp(12), dp(1)));
-        input.setOnFocusChangeListener((v, hasFocus) -> setFieldFocusStyle(input, hasFocus));
+        input.setThreshold(1000);
+        input.setPadding(0, 0, dp(8), 0);
+        input.setBackgroundColor(0x00000000);
+        input.setDropDownBackgroundDrawable(roundRect(0xFFFFFFFF, 0xFFE2E8F0, dp(14), dp(1)));
+        input.setDropDownVerticalOffset(dp(8));
+        input.setDropDownHorizontalOffset(0);
+        input.setOnFocusChangeListener((v, hasFocus) -> setAccountContainerFocusStyle(container, hasFocus));
+        input.setOnClickListener(null);
+        input.setOnTouchListener(null);
+        input.setOnItemClickListener((parent, view, position, id) -> {
+            fillSavedAccount(String.valueOf(parent.getItemAtPosition(position)));
+            suppressAccountDropdownDismiss = false;
+            accountDropdownOpen = false;
+            input.dismissDropDown();
+        });
+        input.setOnDismissListener(() -> {
+            if (suppressAccountDropdownDismiss) return;
+            accountDropdownOpen = false;
+        });
         input.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_NEXT) {
                 passwordInput.requestFocus();
@@ -193,9 +238,33 @@ public class MainActivity extends Activity {
             }
             return false;
         });
+        container.addView(input, new LinearLayout.LayoutParams(0, -1, 1));
+
+        accountDropdownButton = new ImageButton(this);
+        accountDropdownButton.setImageDrawable(new DropdownArrowDrawable(0xFF0F766E, dp(18), dp(10)));
+        accountDropdownButton.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+        accountDropdownButton.setContentDescription("\u5c55\u5f00\u6216\u6536\u8d77\u5386\u53f2\u8d26\u53f7");
+        accountDropdownButton.setMinimumWidth(dp(isTvLike() ? 64 : 48));
+        accountDropdownButton.setMinimumHeight(dp(isTvLike() ? 54 : 44));
+        accountDropdownButton.setBackground(roundRect(0xFFEFFCF9, 0xFFCCFBF1, dp(10), dp(1)));
+        accountDropdownButton.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                accountDropdownButtonTouchActive = true;
+                accountDropdownOpenBeforeButtonDown = accountDropdownOpen || accountInput.isPopupShowing();
+                suppressAccountDropdownDismiss = accountDropdownOpenBeforeButtonDown;
+            } else if (event.getAction() == MotionEvent.ACTION_CANCEL) {
+                accountDropdownButtonTouchActive = false;
+                suppressAccountDropdownDismiss = false;
+            }
+            return false;
+        });
+        accountDropdownButton.setOnClickListener(v -> toggleAccountDropdown());
+        accountDropdownButton.setOnFocusChangeListener((v, hasFocus) -> setAccountDropdownButtonFocusStyle(hasFocus));
+        container.addView(accountDropdownButton, new LinearLayout.LayoutParams(dp(isTvLike() ? 64 : 50), dp(isTvLike() ? 54 : 44)));
+
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.bottomMargin = dp(12);
-        root.addView(input, params);
+        root.addView(container, params);
         return input;
     }
 
@@ -308,17 +377,109 @@ public class MainActivity extends Activity {
     }
 
     private void loadSettings() {
-        accountInput.setText(prefs.getString("account", ""));
-        passwordInput.setText(prefs.getString("password", ""));
-        operatorSpinner.setSelection(safeOperatorIndex(prefs.getString("operator", "0")));
+        savedAccounts.clear();
+        String raw = prefs.getString("accounts_json", "[]");
+        try {
+            JSONArray array = new JSONArray(raw);
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
+                if (item == null) continue;
+                String account = item.optString("account", "").trim();
+                if (TextUtils.isEmpty(account)) continue;
+                savedAccounts.put(account, new AccountRecord(
+                        item.optString("password", ""),
+                        item.optString("operator", "0")
+                ));
+            }
+        } catch (Exception ignored) {
+        }
+
+        String legacyAccount = prefs.getString("account", "").trim();
+        if (!TextUtils.isEmpty(legacyAccount) && !savedAccounts.containsKey(legacyAccount)) {
+            savedAccounts.put(legacyAccount, new AccountRecord(
+                    prefs.getString("password", ""),
+                    prefs.getString("operator", "0")
+            ));
+        }
+        refreshAccountAdapter();
+        String current = prefs.getString("current_account", legacyAccount);
+        accountInput.setText(current, false);
+        fillSavedAccount(current);
     }
 
     private void saveSettings() {
+        rememberCurrentAccount();
         prefs.edit()
+                .putString("current_account", textOf(accountInput))
                 .putString("account", textOf(accountInput))
                 .putString("password", textOf(passwordInput))
                 .putString("operator", selectedOperator())
+                .putString("accounts_json", serializeAccounts())
                 .apply();
+    }
+
+    private void rememberCurrentAccount() {
+        String account = textOf(accountInput);
+        if (TextUtils.isEmpty(account)) return;
+        if (savedAccounts.containsKey(account)) savedAccounts.remove(account);
+        savedAccounts.put(account, new AccountRecord(textOf(passwordInput), selectedOperator()));
+        refreshAccountAdapter();
+    }
+
+    private String serializeAccounts() {
+        JSONArray array = new JSONArray();
+        try {
+            List<Map.Entry<String, AccountRecord>> entries = new ArrayList<>(savedAccounts.entrySet());
+            for (int i = entries.size() - 1; i >= 0; i--) {
+                Map.Entry<String, AccountRecord> entry = entries.get(i);
+                JSONObject item = new JSONObject();
+                item.put("account", entry.getKey());
+                item.put("password", entry.getValue().password);
+                item.put("operator", entry.getValue().operator);
+                array.put(item);
+            }
+        } catch (Exception ignored) {
+        }
+        return array.toString();
+    }
+
+    private void refreshAccountAdapter() {
+        List<String> accounts = new ArrayList<>(savedAccounts.keySet());
+        java.util.Collections.reverse(accounts);
+        accountAdapter = new AccountDropdownAdapter(accounts);
+        accountInput.setAdapter(accountAdapter);
+    }
+
+    private void toggleAccountDropdown() {
+        if (accountAdapter == null || accountAdapter.getCount() == 0) return;
+        boolean wasOpen = accountDropdownButtonTouchActive
+                ? accountDropdownOpenBeforeButtonDown
+                : (accountDropdownOpen || accountInput.isPopupShowing());
+        setAccountDropdownVisible(!wasOpen);
+        accountDropdownButtonTouchActive = false;
+        accountDropdownOpenBeforeButtonDown = false;
+        suppressAccountDropdownDismiss = false;
+    }
+
+    private void setAccountDropdownVisible(boolean visible) {
+        if (accountAdapter == null || accountAdapter.getCount() == 0) return;
+        if (visible) {
+            suppressAccountDropdownDismiss = false;
+            accountInput.requestFocus();
+            accountInput.showDropDown();
+            accountDropdownOpen = true;
+        } else {
+            accountInput.dismissDropDown();
+            accountDropdownOpen = false;
+        }
+    }
+
+    private void fillSavedAccount(String account) {
+        if (TextUtils.isEmpty(account)) return;
+        AccountRecord record = savedAccounts.get(account.trim());
+        if (record == null) return;
+        passwordInput.setText(record.password);
+        operatorSpinner.setSelection(safeOperatorIndex(record.operator));
     }
 
     private void login() {
@@ -349,7 +510,7 @@ public class MainActivity extends Activity {
                     portalPage = httpGet(buildPortalUrl(ip), 8000);
                     if (containsAny(portalPage, "\u6ce8\u9500\u9875", "olflow=")) {
                         FlowInfo flow = parseFlow(portalPage);
-                        showResult("\u5df2\u767b\u5f55\uff1a\u8bbe\u5907 IP " + ip, formatFlow(flow), false, true);
+                        showResult("\u5df2\u767b\u5f55\uff1a\u8bbe\u5907 IP " + ip, formatFlow(flow, ip), false, true);
                         return;
                     }
                 } catch (Exception ignored) {
@@ -369,7 +530,7 @@ public class MainActivity extends Activity {
                         lastUssMessage = "USS\u67e5\u8be2\u5931\u8d25\uff1a" + ex.getClass().getSimpleName() + ": " + safeMessage(ex);
                     }
                     FlowInfo flow = parseFlow(flowSource);
-                    showResult("\u767b\u5f55\u6210\u529f\uff1a\u8bbe\u5907 IP " + ip, formatFlow(flow), false, true);
+                    showResult("\u767b\u5f55\u6210\u529f\uff1a\u8bbe\u5907 IP " + ip, formatFlow(flow, ip), false, true);
                 } else if (isAlreadyOnline(loginResult)) {
                     String flowSource = loginResult;
                     try {
@@ -387,7 +548,7 @@ public class MainActivity extends Activity {
                         lastUssMessage = "USS\u67e5\u8be2\u5931\u8d25\uff1a" + ex.getClass().getSimpleName() + ": " + safeMessage(ex);
                     }
                     FlowInfo flow = parseFlow(flowSource);
-                    showResult("\u8be5\u8d26\u53f7\u5df2\u767b\u5f55\uff1a\u8bbe\u5907 IP " + ip, formatFlow(flow), false, true);
+                    showResult("\u8be5\u8d26\u53f7\u5df2\u767b\u5f55\uff1a\u8bbe\u5907 IP " + ip, formatFlow(flow, ip), false, true);
                 } else {
                     String error = classifyLoginError(loginResult);
                     showResult(error, "\u6d41\u91cf\uff1a\u672a\u77e5", false, false, true);
@@ -401,6 +562,10 @@ public class MainActivity extends Activity {
     private void detectLoginState() {
         String account = textOf(accountInput);
         String password = textOf(passwordInput);
+        if (TextUtils.isEmpty(account) || TextUtils.isEmpty(password)) {
+            showResult("\u672a\u767b\u5f55\uff1a\u8bf7\u5148\u586b\u5199\u5b66\u53f7\u548c\u5bc6\u7801", "\u6d41\u91cf\uff1a\u7b49\u5f85\u767b\u5f55\u7ed3\u679c", false, false, false);
+            return;
+        }
         setBusy(true, "\u6b63\u5728\u68c0\u6d4b\u767b\u5f55\u72b6\u6001...");
         new Thread(() -> {
             try {
@@ -414,40 +579,21 @@ public class MainActivity extends Activity {
                     showResult("\u8bf7\u5148\u8fde\u63a5\u6821\u56ed\u7f51 Wi-Fi", "\u6d41\u91cf\uff1a\u7b49\u5f85\u767b\u5f55\u7ed3\u679c", false, false, false);
                     return;
                 }
-                String flowSource = "";
-                boolean loggedIn = false;
+                String flowSource;
                 try {
-                    String portalPage = httpGet(buildPortalUrl(ip), 8000);
-                    flowSource += portalPage;
-                    if (containsAny(portalPage, "\u6ce8\u9500\u9875", "olflow=")) {
-                        loggedIn = true;
-                    }
-                } catch (Exception ignored) {
-                }
-                try {
-                    String onlineList = httpGet(buildOnlineListUrl(ip), 8000);
-                    flowSource += "\n" + onlineList;
-                    if (containsAny(onlineList, "\"loginTime\"", "\"ip\"")) {
-                        loggedIn = true;
-                    }
-                } catch (Exception ignored) {
-                }
-                try {
-                    String uss = queryUssFlow(account, password);
-                    flowSource += "\n" + uss;
-                    if (containsAny(uss, "leftFlow", "useFlow", "flowStart")) {
-                        loggedIn = true;
-                    }
+                    flowSource = queryUssFlow(account, password);
                 } catch (Exception ex) {
-                    lastUssMessage = "USS\u67e5\u8be2\u5931\u8d25\uff1a" + ex.getClass().getSimpleName() + ": " + safeMessage(ex);
+                    showResult("\u672a\u767b\u5f55\uff1a\u65e0\u6cd5\u8bbf\u95ee USS \u67e5\u8be2\u9875", "\u6d41\u91cf\uff1a\u7b49\u5f85\u767b\u5f55\u7ed3\u679c", false, false, false);
+                    return;
                 }
-                if (loggedIn && isCurrentAccount(flowSource, account)) {
-                    FlowInfo flow = parseFlow(flowSource);
-                    showResult("\u5f53\u524d\u8d26\u53f7\u5df2\u8fde\u63a5", formatFlow(flow), false, true, true);
-                } else if (loggedIn) {
-                    showResult("\u5df2\u8fde\u63a5\u6821\u56ed\u7f51\uff0c\u4f46\u4e0d\u662f\u5f53\u524d\u5b66\u53f7", "\u6d41\u91cf\uff1a\u7b49\u5f85\u767b\u5f55\u7ed3\u679c", false, false, true);
+                FlowInfo flow = parseFlow(flowSource);
+                List<String> onlineIps = extractOnlineIps(flowSource);
+                if (onlineIps.contains(ip)) {
+                    showResult("\u5f53\u524d\u8d26\u53f7\u5df2\u8fde\u63a5\uff1a\u8bbe\u5907 IP " + ip, formatFlow(flow, ip), false, true, true);
+                } else if (!onlineIps.isEmpty()) {
+                    showResult("\u672a\u767b\u5f55\uff1a\u672c\u673a IP " + ip + "\uff0c\u8be5\u8d26\u53f7\u6709\u5176\u4ed6\u8bbe\u5907\u5728\u7ebf", formatFlow(flow, ip), false, false, true);
                 } else {
-                    showResult("\u672a\u767b\u5f55\uff1a\u8bbe\u5907 IP " + ip, "\u6d41\u91cf\uff1a\u7b49\u5f85\u767b\u5f55\u7ed3\u679c", false, false, false);
+                    showResult("\u672a\u767b\u5f55\uff1a\u8bbe\u5907 IP " + ip, formatFlow(flow, ip), false, false, false);
                 }
             } catch (Exception ex) {
                 showResult("\u672a\u68c0\u6d4b\u5230\u5df2\u767b\u5f55\u72b6\u6001", "\u6d41\u91cf\uff1a\u7b49\u5f85\u767b\u5f55\u7ed3\u679c", false, false, false);
@@ -483,7 +629,7 @@ public class MainActivity extends Activity {
                 }
                 FlowInfo flow = parseFlow(flowSource);
                 if (isCurrentAccount(flowSource, account)) {
-                    showResult("\u6d41\u91cf\u5df2\u5237\u65b0", formatFlow(flow), false, true, true);
+                    showResult("\u6d41\u91cf\u5df2\u5237\u65b0", formatFlow(flow, ip), false, true, true);
                 } else {
                     showResult("\u5df2\u8fde\u63a5\u6821\u56ed\u7f51\uff0c\u4f46\u4e0d\u662f\u5f53\u524d\u5b66\u53f7", "\u6d41\u91cf\uff1a\u7b49\u5f85\u767b\u5f55\u7ed3\u679c", false, false, true);
                 }
@@ -573,15 +719,27 @@ public class MainActivity extends Activity {
 
     private String queryUssFlow(String account, String password) throws Exception {
         lastUssMessage = "";
-        String loginPage = httpGet(USS_LOGIN, 10000);
+        Exception lastError = null;
+        for (String host : USS_HOSTS) {
+            try {
+                return queryUssFlowFromHost(host, account, password);
+            } catch (Exception ex) {
+                lastError = ex;
+            }
+        }
+        throw lastError == null ? new IllegalStateException("USS dashboard has no flow") : lastError;
+    }
+
+    private String queryUssFlowFromHost(String host, String account, String password) throws Exception {
+        String loginPage = httpGet(host + "/login/?302=LI", 10000);
         String checkCode = firstRegex(loginPage, "name=\"checkcode\"\\s+value=\"([^\"]*)\"");
         String action = firstRegex(loginPage, "<form\\s+action=\"([^\"]*login/verify[^\"]*)\"");
         if (TextUtils.isEmpty(action)) action = "/login/verify";
-        String verifyUrl = absoluteUssUrl(action);
+        String verifyUrl = absoluteUssUrl(action, host);
         if (TextUtils.isEmpty(checkCode)) {
             throw new IllegalStateException("checkcode not found");
         }
-        httpGet(USS_HOST + "/login/randomCode?t=" + System.currentTimeMillis(), 10000);
+        httpGet(host + "/login/randomCode?t=" + System.currentTimeMillis(), 10000);
 
         String body = "foo="
                 + "&bar="
@@ -591,19 +749,28 @@ public class MainActivity extends Activity {
                 + "&code=";
         String dashboard = httpPostForm(verifyUrl, body, 12000);
         if (!dashboard.contains("leftFlow") && !dashboard.contains("useFlow")) {
-            dashboard = httpGet(USS_HOST + "/dashboard", 10000);
+            dashboard = httpGet(host + "/dashboard", 10000);
         }
         if (!dashboard.contains("leftFlow") && !dashboard.contains("useFlow")) {
             throw new IllegalStateException("dashboard has no flow");
+        }
+        try {
+            dashboard += "\n" + httpGet(ussOnlineListUrl(host), 8000);
+        } catch (Exception ignored) {
         }
         lastUssMessage = "USS\u6d41\u91cf\u67e5\u8be2\u6210\u529f";
         return dashboard;
     }
 
-    private static String absoluteUssUrl(String action) {
+    private static String ussOnlineListUrl(String host) {
+        long stamp = System.currentTimeMillis();
+        return host + "/dashboard/getOnlineList?t=" + Math.random() + "&order=asc&_=" + stamp;
+    }
+
+    private static String absoluteUssUrl(String action, String host) {
         if (action.startsWith("http://") || action.startsWith("https://")) return action;
         if (!action.startsWith("/")) action = "/" + action;
-        return USS_HOST + action;
+        return host + action;
     }
 
     private static String firstRegex(String source, String pattern) {
@@ -613,24 +780,33 @@ public class MainActivity extends Activity {
 
     private FlowInfo parseFlow(String source) {
         long remainingMb = firstPositive(
+                extractLabeledHtmlMb(source, "\u53ef\u7528\u6d41\u91cf"),
                 extractKbAsMb(source, "olflow"),
                 extractKbAsMb(source, "remainflow"),
                 extractKbAsMb(source, "leftflow"),
-                extractJsonMb(source, "leftFlow")
+                extractJsonMb(source, "leftFlow"),
+                extractJsonMb(source, "left_flow"),
+                extractJsonMb(source, "available_flow")
         );
         long usedMb = firstPositive(
+                extractLabeledHtmlMb(source, "\u5df2\u7528\u6d41\u91cf"),
                 extractKbAsMb(source, "flow"),
                 extractKbAsMb(source, "usedflow"),
                 extractKbAsMb(source, "useflow"),
                 extractJsonMb(source, "useFlow"),
-                extractJsonMb(source, "internetDownFlow")
+                extractJsonMb(source, "internetDownFlow"),
+                extractJsonMb(source, "use_flow"),
+                extractJsonMb(source, "use_flow_only")
+        );
+        long baseMb = firstPositive(
+                extractLabeledHtmlMb(source, "\u57fa\u7840\u8d60\u9001\u6d41\u91cf"),
+                extractJsonMb(source, "flowStart")
         );
         long totalMb = firstPositive(
                 extractKbAsMb(source, "allflow"),
                 extractKbAsMb(source, "totalflow"),
                 extractKbAsMb(source, "sumflow"),
                 extractKbAsMb(source, "monthflow"),
-                extractJsonMb(source, "flowStart"),
                 extractJsonMb(source, "totalFlow")
         );
         if (totalMb < 0 && remainingMb >= 0 && usedMb >= 0) {
@@ -639,23 +815,32 @@ public class MainActivity extends Activity {
         if (usedMb < 0 && totalMb > 0 && remainingMb >= 0) {
             usedMb = Math.max(0, totalMb - remainingMb);
         }
-        long onlineCount = firstPositive(
-                extractJsonMb(source, "ipCount"),
-                countOnlineListItems(source)
-        );
-        return new FlowInfo(totalMb, remainingMb, usedMb, onlineCount);
+        List<String> onlineIps = extractOnlineIps(source);
+        long onlineCount = onlineIps.isEmpty() ? countOnlineListItems(source) : onlineIps.size();
+        return new FlowInfo(totalMb, remainingMb, usedMb, baseMb, onlineCount, onlineIps);
     }
 
-    private String formatFlow(FlowInfo flow) {
-        String total = flow.totalMb >= 0 ? flow.totalMb + " MB" : "\u672a\u77e5";
+    private String formatFlow(FlowInfo flow, String localIp) {
         String remaining = flow.remainingMb >= 0 ? flow.remainingMb + " MB" : "\u672a\u77e5";
         String used = flow.usedMb >= 0 ? flow.usedMb + " MB" : "\u672a\u77e5";
-        String online = flow.onlineCount >= 0 ? flow.onlineCount + " \u53f0" : "\u672a\u77e5";
-        String result = "\u603b\u6d41\u91cf\uff1a" + total + "\n\u5269\u4f59\u6d41\u91cf\uff1a" + remaining + "\n\u5df2\u7528\u6d41\u91cf\uff1a" + used + "\n\u5f53\u524d\u5728\u7ebf\uff1a" + online;
-        if (!TextUtils.isEmpty(lastUssMessage)) {
-            result += "\n" + lastUssMessage;
+        String base = flow.baseMb >= 0 ? flow.baseMb + " MB" : "\u672a\u77e5";
+        String online = formatOnlineStatus(flow, localIp);
+        return "\u5269\u4f59\u6d41\u91cf\uff1a" + remaining
+                + "\n\u5df2\u7528\u6d41\u91cf\uff1a" + used
+                + "\n\u57fa\u7840\u8d60\u9001\u6d41\u91cf\uff1a" + base
+                + "\n\u5f53\u524d\u5728\u7ebf\uff1a" + online;
+    }
+
+    private String formatOnlineStatus(FlowInfo flow, String localIp) {
+        String count = flow.onlineCount >= 0 ? flow.onlineCount + " \u53f0" : "\u672a\u77e5";
+        List<String> others = new ArrayList<>();
+        for (String ip : flow.onlineIps) {
+            if (!isValidOnlineIp(ip)) continue;
+            if (!TextUtils.isEmpty(localIp) && localIp.equals(ip)) continue;
+            if (!others.contains(ip)) others.add(ip);
         }
-        return result;
+        if (others.isEmpty()) return count;
+        return count + "\uff0c\u5176\u4ed6 IP\uff1a" + TextUtils.join("\u3001", others);
     }
 
     private static long extractKbAsMb(String source, String key) {
@@ -672,12 +857,49 @@ public class MainActivity extends Activity {
         return Math.round(value);
     }
 
+    private static long extractLabeledHtmlMb(String source, String label) {
+        if (source == null) return -1;
+        Matcher pair = Pattern.compile("<dt[^>]*>(.*?)</dt>\\s*<dd[^>]*>(.*?)</dd>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL).matcher(source);
+        while (pair.find()) {
+            String value = pair.group(1).replaceAll("<[^>]+>", " ");
+            String name = pair.group(2).replaceAll("<[^>]+>", "").trim();
+            if (label.equals(name)) {
+                Matcher number = Pattern.compile("(\\d+(?:\\.\\d+)?)").matcher(value);
+                if (number.find()) return Math.round(Double.parseDouble(number.group(1)));
+            }
+        }
+        int pos = source.indexOf(label);
+        if (pos >= 0) {
+            String before = source.substring(Math.max(0, pos - 300), pos);
+            Matcher number = Pattern.compile("(\\d+(?:\\.\\d+)?)").matcher(before);
+            long result = -1;
+            while (number.find()) result = Math.round(Double.parseDouble(number.group(1)));
+            return result;
+        }
+        return -1;
+    }
+
+    private static List<String> extractOnlineIps(String source) {
+        List<String> ips = new ArrayList<>();
+        if (source == null) return ips;
+        Matcher matcher = Pattern.compile("\"(?:ip|loginIp|login_ip|sourceIp|source_ip|userIp|user_ip)\"\\s*:\\s*\"([^\"]+)\"").matcher(source);
+        while (matcher.find()) {
+            String ip = matcher.group(1).trim();
+            if (isValidOnlineIp(ip) && !ips.contains(ip)) ips.add(ip);
+        }
+        return ips;
+    }
+
+    private static boolean isValidOnlineIp(String ip) {
+        if (TextUtils.isEmpty(ip) || "0.0.0.0".equals(ip) || "255.255.255.255".equals(ip)) return false;
+        return Pattern.compile("^(?:\\d{1,3}\\.){3}\\d{1,3}$").matcher(ip).matches();
+    }
+
     private static long countOnlineListItems(String source) {
-        if (source == null || !source.contains("\"loginTime\"")) return -1;
-        Matcher matcher = Pattern.compile("\"loginTime\"").matcher(source);
-        long count = 0;
-        while (matcher.find()) count++;
-        return count > 0 ? count : -1;
+        List<String> ips = extractOnlineIps(source);
+        if (!ips.isEmpty()) return ips.size();
+        if (source != null && source.contains("\u5728\u7ebf") && source.contains("\u6570\u636e\u4e3a\u7a7a")) return 0;
+        return -1;
     }
 
     private static long ipToUnsignedInt(String ip) {
@@ -966,8 +1188,19 @@ public class MainActivity extends Activity {
         input.setBackground(roundRect(hasFocus ? 0xFFEFF6FF : 0xFFF8FAFC, hasFocus ? 0xFF1D4ED8 : 0xFFCBD5E1, dp(12), hasFocus ? dp(3) : dp(1)));
     }
 
+    private void setAccountContainerFocusStyle(LinearLayout container, boolean hasFocus) {
+        container.setBackground(roundRect(hasFocus ? 0xFFEFF6FF : 0xFFF8FAFC, hasFocus ? 0xFF1D4ED8 : 0xFFCBD5E1, dp(12), hasFocus ? dp(3) : dp(1)));
+    }
+
     private void setPasswordContainerFocusStyle(LinearLayout container, boolean hasFocus) {
         container.setBackground(roundRect(hasFocus ? 0xFFEFF6FF : 0xFFF8FAFC, hasFocus ? 0xFF1D4ED8 : 0xFFCBD5E1, dp(12), hasFocus ? dp(3) : dp(1)));
+    }
+
+    private void setAccountDropdownButtonFocusStyle(boolean hasFocus) {
+        accountDropdownButton.setColorFilter(hasFocus ? 0xFFFFFFFF : 0xFF0F766E);
+        accountDropdownButton.setScaleX(1f);
+        accountDropdownButton.setScaleY(1f);
+        accountDropdownButton.setBackground(roundRect(hasFocus ? 0xFF1D4ED8 : 0xFFEFFCF9, hasFocus ? 0xFF1D4ED8 : 0xFFCCFBF1, dp(10), hasFocus ? 0 : dp(1)));
     }
 
     private void setPasswordToggleFocusStyle(boolean hasFocus) {
@@ -1071,17 +1304,125 @@ public class MainActivity extends Activity {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    private class AccountDropdownAdapter extends ArrayAdapter<String> {
+        AccountDropdownAdapter(List<String> accounts) {
+            super(MainActivity.this, android.R.layout.simple_dropdown_item_1line, accounts);
+        }
+
+        @Override
+        public View getView(int position, View convertView, android.view.ViewGroup parent) {
+            return accountRow(position);
+        }
+
+        @Override
+        public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
+            return accountRow(position);
+        }
+
+        private View accountRow(int position) {
+            TextView view = new TextView(MainActivity.this);
+            view.setText(getItem(position));
+            view.setSingleLine(true);
+            view.setTextColor(0xFF0F172A);
+            view.setTextSize(isTvLike() ? 19 : 16);
+            view.setGravity(Gravity.CENTER_VERTICAL);
+            view.setPadding(dp(18), 0, dp(18), 0);
+            view.setMinHeight(dp(isTvLike() ? 58 : 48));
+            view.setBackground(dropdownRowBackground());
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(isTvLike() ? 62 : 52));
+            params.setMargins(dp(8), dp(5), dp(8), dp(5));
+            view.setLayoutParams(params);
+            return view;
+        }
+    }
+
+    private StateListDrawable dropdownRowBackground() {
+        StateListDrawable drawable = new StateListDrawable();
+        drawable.addState(new int[]{android.R.attr.state_pressed}, roundRect(0xFFDBEAFE, 0xFF93C5FD, dp(12), dp(1)));
+        drawable.addState(new int[]{android.R.attr.state_selected}, roundRect(0xFFE0F2FE, 0xFF38BDF8, dp(12), dp(1)));
+        drawable.addState(new int[]{android.R.attr.state_focused}, roundRect(0xFFE0F2FE, 0xFF38BDF8, dp(12), dp(1)));
+        drawable.addState(new int[]{}, roundRect(0xFFF1F5F9, 0x00FFFFFF, dp(12), 0));
+        return drawable;
+    }
+
+    private static class DropdownArrowDrawable extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int width;
+        private final int height;
+
+        DropdownArrowDrawable(int color, int width, int height) {
+            this.width = width;
+            this.height = height;
+            paint.setColor(color);
+            paint.setStyle(Paint.Style.FILL);
+            setBounds(0, 0, width, height);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Path path = new Path();
+            int left = getBounds().left;
+            int top = getBounds().top;
+            int right = getBounds().right;
+            int bottom = getBounds().bottom;
+            path.moveTo(left, top);
+            path.lineTo(right, top);
+            path.lineTo((left + right) / 2f, bottom);
+            path.close();
+            canvas.drawPath(path, paint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(android.graphics.ColorFilter colorFilter) {
+            paint.setColorFilter(colorFilter);
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return width;
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return height;
+        }
+    }
+
     private static class FlowInfo {
         final long totalMb;
         final long remainingMb;
         final long usedMb;
+        final long baseMb;
         final long onlineCount;
+        final List<String> onlineIps;
 
-        FlowInfo(long totalMb, long remainingMb, long usedMb, long onlineCount) {
+        FlowInfo(long totalMb, long remainingMb, long usedMb, long baseMb, long onlineCount, List<String> onlineIps) {
             this.totalMb = totalMb;
             this.remainingMb = remainingMb;
             this.usedMb = usedMb;
+            this.baseMb = baseMb;
             this.onlineCount = onlineCount;
+            this.onlineIps = onlineIps == null ? new ArrayList<>() : onlineIps;
+        }
+    }
+
+    private static class AccountRecord {
+        final String password;
+        final String operator;
+
+        AccountRecord(String password, String operator) {
+            this.password = password == null ? "" : password;
+            this.operator = TextUtils.isEmpty(operator) ? "0" : operator;
         }
     }
 }
