@@ -21,6 +21,7 @@ import android.text.InputType;
 import android.text.TextUtils;
 import android.text.method.PasswordTransformationMethod;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
@@ -219,7 +220,8 @@ public class MainActivity extends Activity {
         input.setDropDownVerticalOffset(dp(8));
         input.setDropDownHorizontalOffset(0);
         input.setOnFocusChangeListener((v, hasFocus) -> setAccountContainerFocusStyle(container, hasFocus));
-        input.setOnClickListener(null);
+        input.setOnClickListener(v -> showKeyboard(input));
+        input.setOnKeyListener((v, keyCode, event) -> handleTextInputConfirmKey(input, keyCode, event));
         input.setOnTouchListener(null);
         input.setOnItemClickListener((parent, view, position, id) -> {
             fillSavedAccount(String.valueOf(parent.getItemAtPosition(position)));
@@ -291,6 +293,8 @@ public class MainActivity extends Activity {
         input.setPadding(0, 0, dp(8), 0);
         input.setBackgroundColor(0x00000000);
         input.setOnFocusChangeListener((v, hasFocus) -> setPasswordContainerFocusStyle(container, hasFocus));
+        input.setOnClickListener(v -> showKeyboard(input));
+        input.setOnKeyListener((v, keyCode, event) -> handleTextInputConfirmKey(input, keyCode, event));
         input.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_DONE) {
                 finishTextInput();
@@ -1182,6 +1186,29 @@ public class MainActivity extends Activity {
         if (manager != null) {
             manager.hideSoftInputFromWindow(view.getWindowToken(), 0);
         }
+    }
+
+    private boolean handleTextInputConfirmKey(EditText input, int keyCode, KeyEvent event) {
+        if (event == null || event.getAction() != KeyEvent.ACTION_UP) return false;
+        if (keyCode != KeyEvent.KEYCODE_DPAD_CENTER
+                && keyCode != KeyEvent.KEYCODE_ENTER
+                && keyCode != KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            return false;
+        }
+        showKeyboard(input);
+        return true;
+    }
+
+    private void showKeyboard(EditText input) {
+        input.requestFocus();
+        int selection = input.getSelectionStart();
+        input.setSelection(Math.max(0, selection));
+        input.post(() -> {
+            InputMethodManager manager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (manager != null) {
+                manager.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT);
+            }
+        });
     }
 
     private void setFieldFocusStyle(EditText input, boolean hasFocus) {
